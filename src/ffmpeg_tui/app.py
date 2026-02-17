@@ -80,23 +80,28 @@ class FFmpegTUI(App):
     }
     TabPane {
         padding: 1 2;
+        overflow-y: auto;
     }
     .pane-title {
         text-style: bold;
-        margin-bottom: 1;
-    }
-    .section-box {
-        border: solid $accent;
-        padding: 1 2;
         margin-bottom: 1;
     }
     .section-label {
         text-style: bold;
         margin-bottom: 1;
     }
+    /* --- File Selection --- */
+    #file-input {
+        width: 1fr;
+    }
+    #btn-toggle-browser {
+        width: auto;
+        min-width: 12;
+    }
     #file-browser {
         height: 14;
         border: solid $accent;
+        margin-top: 1;
     }
     #probe-info {
         margin-top: 1;
@@ -105,6 +110,30 @@ class FFmpegTUI(App):
         height: auto;
         max-height: 10;
     }
+    /* --- Codec Selection --- */
+    #tab-codec Horizontal {
+        height: auto;
+    }
+    #tab-codec Horizontal > Vertical {
+        width: 1fr;
+        margin: 0 1;
+    }
+    RadioSet {
+        height: auto;
+        border: solid $accent;
+        padding: 1;
+    }
+    /* --- Settings --- */
+    #tab-settings Horizontal {
+        height: auto;
+    }
+    #tab-settings Horizontal > Vertical {
+        width: 1fr;
+        margin: 0 1;
+    }
+    #crf-input {
+        width: 12;
+    }
     #command-preview {
         padding: 1 2;
         border: solid $warning;
@@ -112,18 +141,7 @@ class FFmpegTUI(App):
         margin-top: 1;
         height: auto;
     }
-    #command-preview-text {
-        color: $text;
-    }
-    .codec-row {
-        height: auto;
-        margin-bottom: 0;
-    }
-    RadioSet {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-    }
+    /* --- Encode --- */
     .progress-stats {
         padding: 1 2;
         border: solid $accent;
@@ -137,10 +155,12 @@ class FFmpegTUI(App):
         border: solid $accent;
         margin-top: 1;
     }
+    /* --- Done --- */
     #results-box {
         padding: 1 2;
         border: solid $success;
     }
+    /* --- Shared --- */
     .button-row {
         margin-top: 1;
         height: 3;
@@ -152,6 +172,11 @@ class FFmpegTUI(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("f1", "switch_tab('tab-files')", "Files", show=True),
+        Binding("f2", "switch_tab('tab-codec')", "Codec", show=True),
+        Binding("f3", "switch_tab('tab-settings')", "Settings", show=True),
+        Binding("f4", "switch_tab('tab-encode')", "Encode", show=True),
+        Binding("f5", "switch_tab('tab-done')", "Done", show=True),
     ]
 
     # Reactive state
@@ -262,6 +287,12 @@ class FFmpegTUI(App):
                     yield Button("New Encode", id="btn-new", variant="primary")
 
         yield Footer()
+
+    # ----- Actions -----
+
+    def action_switch_tab(self, tab_id: str) -> None:
+        """Switch to a tab by ID."""
+        self.query_one(TabbedContent).active = tab_id
 
     # ----- Event handlers -----
 

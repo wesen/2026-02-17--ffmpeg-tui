@@ -18,4 +18,4 @@
 - [x] Phase 7: Async ffmpeg encoder worker with -progress pipe parsing
 - [x] Phase 8: Encode screen — progress bar, stats, ffmpeg log
 - [x] Phase 9: Done screen — results summary table with size savings
-- [ ] Phase 10: Polish — keybindings, error handling, CSS styling
+- [x] Phase 10: Polish — keybindings, error handling, CSS styling
