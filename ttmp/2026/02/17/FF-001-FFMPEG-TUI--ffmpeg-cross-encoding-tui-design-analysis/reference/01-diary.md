@@ -1,18 +1,27 @@
 ---
-title: "Diary"
-doc_type: reference
-ticket: FF-001-FFMPEG-TUI
-status: active
-intent: long-term
-topics:
-  - tui
-  - ffmpeg
-  - python
-  - video-encoding
-created: "2026-02-17"
-related_files:
-  - /home/manuel/code/wesen/2026-02-17--ffmpeg-tui/ttmp/2026/02/17/FF-001-FFMPEG-TUI--ffmpeg-cross-encoding-tui-design-analysis/design/01-ffmpeg-tui-design-analysis.md
+Title: ""
+Ticket: ""
+Status: ""
+Topics: []
+DocType: ""
+Intent: ""
+Owners: []
+RelatedFiles:
+    - Path: src/ffmpeg_tui/app.py
+      Note: Main Textual app with all 5 tabs
+    - Path: src/ffmpeg_tui/models/codecs.py
+      Note: Codec/container/preset definitions
+    - Path: src/ffmpeg_tui/models/job.py
+      Note: Encoding job model and command builder
+    - Path: src/ffmpeg_tui/models/probe.py
+      Note: ffprobe wrapper
+ExternalSources: []
+Summary: ""
+LastUpdated: 0001-01-01T00:00:00Z
+WhatFor: ""
+WhenToUse: ""
 ---
+
 
 # Diary
 
@@ -192,3 +201,180 @@ review. The document is now at `/ai/2026/02/17/FF-001-FFMPEG-TUI/` on the device
 ### Code review instructions
 - Review the PDF on reMarkable: `/ai/2026/02/17/FF-001-FFMPEG-TUI/FF-001 FFmpeg TUI Design.pdf`
 - Focus on: 5 ASCII screen mockups, MVP scope table, open questions
+
+## Step 4: Implementation — Project Scaffold & Data Models (Phases 0–3)
+
+Created the project structure, the bare Textual app skeleton with 5 tabs, and
+the core data models: ffprobe wrapper and codec/container/preset definitions.
+This is the foundation everything else builds on.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Add tasks to the ticket to implement. Make a simpler version at first, before the whole thing. Then go through the tasks, build it, check the task off. Commit at appropriate points in time. Keep a diary."
+
+**Assistant interpretation:** Plan incremental implementation tasks, build in phases (simple skeleton first), check off tasks as completed, commit at each milestone, and maintain the diary.
+
+**Inferred user intent:** Get a working TUI built incrementally with good version control discipline and documented progress.
+
+### What I did
+- Added 11 implementation tasks (Phases 0–10) to the ticket
+- Phase 0: Created `pyproject.toml`, `src/ffmpeg_tui/` package, `__main__.py` entry point
+- Phase 1: Bare Textual app with 5 tabs (Files/Codec/Settings/Encode/Done), Header, Footer
+- Phase 2: `models/probe.py` — ffprobe JSON parser returning `ProbeResult` dataclass
+- Phase 3: `models/codecs.py` — 6 video codecs, 5 audio codecs, 3 containers, 7 presets
+- Commits: `f0341b7` (Phase 0+1), `1a549bf` (Phase 2+3)
+
+### Why
+- Incremental approach: skeleton → models → UI → encoding → polish
+- Data models first so the UI has real data to work with
+
+### What worked
+- `pip install -e .` for editable install (fix: `build-backend` was wrong initially)
+- ffprobe wrapper tested against real video: correctly parses h264 320x240 25fps
+- Codec model cleanly separates SW vs HW encoders, per-codec CRF ranges/presets
+
+### What didn't work
+- `setuptools.backends._legacy:_Backend` doesn't exist; fixed to `setuptools.build_meta`
+
+### What I learned
+- Each video codec has different CRF ranges (x264/x265: 0-51, AV1/VP9: 0-63)
+- Each codec also has different preset naming (x264: ultrafast-veryslow, SVT-AV1: 0-13, NVENC: p1-p7)
+
+### What was tricky to build
+- N/A (straightforward data modeling)
+
+### What warrants a second pair of eyes
+- VP9 uses `-speed` not `-preset`, and NVENC uses `-cq` not `-crf` — need to verify these work
+
+### What should be done in the future
+- N/A (proceeding to UI)
+
+### Code review instructions
+- `src/ffmpeg_tui/models/probe.py` — ffprobe wrapper
+- `src/ffmpeg_tui/models/codecs.py` — codec definitions
+- Run: `python3 -c "from ffmpeg_tui.models.probe import probe; print(probe('test_sample.mp4').summary)"`
+
+## Step 5: Implementation — Full UI with Encoding (Phases 4–9)
+
+Built all 5 interactive tabs with real functionality: file selection with
+ffprobe, codec/container/audio radio selection, settings with CRF/preset/command
+preview, async encoding with progress tracking, and results summary. Also created
+the `EncodingJob` model that builds ffmpeg commands and manages output paths.
+
+### Prompt Context
+
+**User prompt (verbatim):** (same as Step 4)
+
+**Assistant interpretation:** (same as Step 4)
+
+**Inferred user intent:** (same as Step 4)
+
+### What I did
+- `models/job.py`: `EncodingJob` dataclass — builds ffmpeg commands, resolves output paths
+- Files tab: `Input` + `VideoDirectoryTree` (filtered to video extensions) + ffprobe info panel
+- Codec tab: `RadioSet` for video (6 options), container (3), audio (5)
+  - Auto-suggests container when video codec changes (H.265→MKV, VP9→WebM)
+  - Updates CRF default and preset list per codec
+- Settings tab: CRF Input, preset Select (dynamic per codec), audio bitrate, preset loader
+  - Live command preview showing the exact ffmpeg command
+- Encode tab: async ffmpeg worker using `-progress pipe:1`, ProgressBar, stats panel, RichLog
+- Done tab: results summary with input/output sizes and savings percentage
+- Tested end-to-end: 30s test video encoded in 3s, 744KB→521KB (30% saved)
+- Commit: `999fb6b`
+
+### Why
+- Building all panes together avoids half-working intermediate states
+- Job model centralizes command building — single source of truth for the ffmpeg invocation
+
+### What worked
+- Textual's `run_test()` is excellent for headless testing — captures screenshots as SVG
+- `-progress pipe:1` gives structured key=value output (out_time_ms, speed, fps, bitrate)
+- `RadioSet.Changed` event cleanly identifies which radio was pressed via `event.pressed.id`
+- Auto-suggest container on codec change feels natural and reduces clicks
+
+### What didn't work
+- `output_path` property recalculated on every call — after encoding, the file exists, so
+  collision avoidance incremented the counter and the result screen showed "0 B" for output size.
+  Fixed by adding `resolve_output_path()` that locks the path before encoding starts.
+- `Input.action_submit()` is a coroutine in Textual 2.x — calling it synchronously silently
+  fails. Worked around by calling `_probe_file()` directly in tests.
+
+### What I learned
+- ffmpeg's `-progress pipe:1` `out_time_ms` field is actually in microseconds despite the name
+- Textual's `Select.BLANK` sentinel must be checked when handling `Select.Changed` events
+- `call_from_thread` is needed when posting UI updates from async workers in some contexts
+
+### What was tricky to build
+- Progress percentage calculation: `out_time_ms` is microseconds, divide by 1,000,000 to get
+  seconds, then compare to probe duration. Edge case: if probe duration is 0 (e.g. live stream),
+  percentage stays at 0.
+- Output path collision avoidance: had to separate "preview path" (for command display) from
+  "locked path" (for actual encoding). The `resolve_output_path()` pattern solves this cleanly.
+
+### What warrants a second pair of eyes
+- The async worker reads both stdout (progress pipe) and stderr (log) concurrently — if ffmpeg
+  writes a lot of stderr, the `read_stderr()` task and the progress reader could race. In
+  practice this works fine for short encodes; needs stress testing with long/error-heavy encodes.
+- Error handling in the worker is minimal — catches Exception broadly. Should distinguish
+  ffmpeg errors (bad codec, permission denied) from system errors.
+
+### What should be done in the future
+- Add proper error messages for common ffmpeg failures
+- Test with long encodes and HW encoders (NVENC, VAAPI)
+- Add batch encoding (multiple files in queue)
+
+### Code review instructions
+- Start: `src/ffmpeg_tui/app.py` — main application, all 5 tabs
+- Key model: `src/ffmpeg_tui/models/job.py` — `EncodingJob.build_command()` and `resolve_output_path()`
+- Run: `python3 -m ffmpeg_tui` (requires terminal) or use Textual test runner
+
+## Step 6: Polish & Final Commit (Phase 10)
+
+Added F1–F5 keybindings for direct tab switching, improved CSS layout (inputs
+fill width, even column splits, scrollable tab panes), and verified the full
+encode cycle one more time.
+
+### Prompt Context
+
+**User prompt (verbatim):** (same as Step 4)
+
+**Assistant interpretation:** (same as Step 4)
+
+**Inferred user intent:** (same as Step 4)
+
+### What I did
+- Added F1–F5 bindings mapped to `action_switch_tab()`
+- Fixed Input width to `1fr` so it fills available space
+- Horizontal layouts in Codec/Settings use `1fr` per child for even splits
+- Tab panes now scrollable (`overflow-y: auto`)
+- CRF input narrowed to 12 chars
+- Commit: `02857c3`
+
+### Why
+- F-key shortcuts let power users jump between tabs without mouse/Tab key
+- CSS fixes make the app look good at various terminal widths
+
+### What worked
+- Textual's binding system cleanly maps F-keys to actions with string parameters
+- `overflow-y: auto` on TabPane handles tall content gracefully
+
+### What didn't work
+- N/A
+
+### What I learned
+- Textual bindings can pass arguments as strings: `Binding("f1", "switch_tab('tab-files')", ...)`
+
+### What was tricky to build
+- N/A (straightforward CSS + bindings)
+
+### What warrants a second pair of eyes
+- Tab content may be too tall for small terminals — could add a minimum size warning
+
+### What should be done in the future
+- Test at various terminal sizes (80x24 minimum)
+- Consider adding mouse click on probe info to open file in default player
+
+### Code review instructions
+- CSS block in `app.py` (top of class)
+- `BINDINGS` list and `action_switch_tab()` method
+- Run: `python3 -m ffmpeg_tui` and press F1–F5 to verify

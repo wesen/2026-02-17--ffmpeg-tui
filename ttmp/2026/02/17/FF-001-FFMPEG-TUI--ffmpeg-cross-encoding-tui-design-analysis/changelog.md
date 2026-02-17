@@ -18,3 +18,12 @@ Created design analysis with 5 ASCII screen mockups, architecture plan, MVP scop
 
 Uploaded design analysis + diary bundle to reMarkable at /ai/2026/02/17/FF-001-FFMPEG-TUI
 
+
+## 2026-02-17
+
+Implemented full v0.1 TUI: file select, codec/container/audio, settings with command preview, async encode with progress, results summary. All 16 tasks complete.
+
+### Related Files
+
+- /home/manuel/code/wesen/2026-02-17--ffmpeg-tui/src/ffmpeg_tui/app.py — Main app
+
