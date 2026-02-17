@@ -6,3 +6,5 @@ build/
 .venv/
 
 test_sample.mp4
+test_sample_30s.mp4
+test_sample_30s_encoded*.mp4
