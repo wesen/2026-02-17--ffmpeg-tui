@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from ffmpeg_tui.models.codecs import (
@@ -14,6 +15,27 @@ from ffmpeg_tui.models.codecs import (
     VideoCodec,
 )
 from ffmpeg_tui.models.probe import ProbeResult
+
+
+class JobStatus(Enum):
+    PENDING = "Pending"
+    ENCODING = "Encoding"
+    PAUSED = "Paused"
+    DONE = "Done"
+    FAILED = "Failed"
+    CANCELLED = "Cancelled"
+
+
+# Common resolution presets (height-based, aspect ratio preserved)
+RESOLUTIONS: list[tuple[str, int | None]] = [
+    ("Keep original", None),
+    ("2160p (4K)", 2160),
+    ("1440p (2K)", 1440),
+    ("1080p (Full HD)", 1080),
+    ("720p (HD)", 720),
+    ("480p (SD)", 480),
+    ("360p", 360),
+]
 
 
 @dataclass
@@ -29,7 +51,14 @@ class EncodingJob:
     preset: str = "medium"
     audio_bitrate: str = "128k"
     output_dir: Path | None = None  # None = same dir as input
+    scale_height: int | None = None  # None = keep original
     _resolved_output: Path | None = field(default=None, repr=False)
+
+    # Runtime state
+    status: JobStatus = JobStatus.PENDING
+    progress: float = 0.0
+    elapsed: float = 0.0
+    output_size: int = 0
 
     @property
     def video_codec(self) -> VideoCodec:
@@ -54,6 +83,10 @@ class EncodingJob:
         """Lock in the output path (call once before encoding starts)."""
         self._resolved_output = self._compute_output_path()
         return self._resolved_output
+
+    def reset_output_path(self) -> None:
+        """Clear cached output path so it gets recomputed."""
+        self._resolved_output = None
 
     def _compute_output_path(self) -> Path:
         stem = self.input_path.stem
@@ -90,10 +123,13 @@ class EncodingJob:
         if self.preset:
             if vc.id == "libvpx-vp9":
                 cmd += ["-speed", self.preset]
-            elif vc.id == "libsvtav1":
-                cmd += ["-preset", self.preset]
             else:
                 cmd += ["-preset", self.preset]
+
+        # Scale filter
+        if self.scale_height is not None:
+            # scale to height, keep aspect ratio (width divisible by 2)
+            cmd += ["-vf", f"scale=-2:{self.scale_height}"]
 
         # Audio
         ac = self.audio_codec
@@ -113,3 +149,31 @@ class EncodingJob:
     def command_str(self) -> str:
         """Build the ffmpeg command as a display string."""
         return " ".join(self.build_command())
+
+
+def create_job_from_template(
+    input_path: Path,
+    probe_result: ProbeResult,
+    *,
+    video_codec_id: str = "libx264",
+    audio_codec_id: str = "aac",
+    container_id: str = "mp4",
+    crf: int = 23,
+    preset: str = "medium",
+    audio_bitrate: str = "128k",
+    output_dir: Path | None = None,
+    scale_height: int | None = None,
+) -> EncodingJob:
+    """Create a new job from current settings (used for batch queue)."""
+    return EncodingJob(
+        input_path=input_path,
+        probe=probe_result,
+        video_codec_id=video_codec_id,
+        audio_codec_id=audio_codec_id,
+        container_id=container_id,
+        crf=crf,
+        preset=preset,
+        audio_bitrate=audio_bitrate,
+        output_dir=output_dir,
+        scale_height=scale_height,
+    )

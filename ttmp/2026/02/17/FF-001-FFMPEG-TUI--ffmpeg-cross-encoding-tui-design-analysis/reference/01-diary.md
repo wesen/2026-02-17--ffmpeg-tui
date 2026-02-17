@@ -378,3 +378,87 @@ encode cycle one more time.
 - CSS block in `app.py` (top of class)
 - `BINDINGS` list and `action_switch_tab()` method
 - Run: `python3 -m ffmpeg_tui` and press F1–F5 to verify
+
+## Step 7: Feature Round 2 — Multi-file, Batch, Scale, Output Dir, Pause
+
+Major feature expansion: rewrote the app to support multi-file selection with a
+queue display, sequential batch encoding with per-job tracking, resolution
+scaling, configurable output directory, and pause/resume via SIGSTOP/SIGCONT.
+The Done tab now shows a proper DataTable with per-file results and totals.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ok, add a bit more features"
+
+**Assistant interpretation:** Add the P1/P2 features from the design doc: batch queue, resolution scaling, output directory, pause/resume.
+
+**Inferred user intent:** Make the TUI more capable for real-world use — handling multiple files and giving the user control over output location and resolution.
+
+### What I did
+- **Multi-file selection**: Files tab now has Add/Remove/Clear buttons. Files are stored in
+  `_selected_files` dict (path → ProbeResult). Display shows numbered list with probe summaries.
+- **Batch encoding**: `_build_queue()` creates one `EncodingJob` per file from current settings.
+  `_run_batch()` iterates the queue sequentially, updating a DataTable with status/progress per job.
+- **Resolution scaling**: Added `RESOLUTIONS` list (Keep original, 2160p, 1440p, 1080p, 720p,
+  480p, 360p) and a Select widget. When set, adds `-vf scale=-2:{height}` to the ffmpeg command.
+- **Output directory**: Input widget for custom output dir. Created automatically if missing.
+  Command preview updates live as you type.
+- **Pause/Resume**: Toggle button sends SIGSTOP/SIGCONT to the ffmpeg process. Button label
+  changes between "⏸ Pause" and "▶ Resume". Cancel resumes first if paused before terminating.
+- **Batch results**: Done tab uses DataTable with columns: #, File, Input, Output, Saved, Time.
+  Includes a totals row and summary line.
+- **Job model**: Added `JobStatus` enum, `RESOLUTIONS`, `create_job_from_template()`,
+  `scale_height` field, runtime state fields (status, progress, elapsed, output_size).
+- **Settings extraction**: `_get_current_settings()` reads all UI widget values into a dict,
+  used by both command preview and queue builder.
+
+### Why
+- Multi-file is the most requested feature — nobody wants to run the TUI once per file
+- Resolution scaling is essential for web/mobile targets
+- Output directory keeps encoded files organized and separate from originals
+- Pause/resume is valuable for long encodes when you need to free up CPU
+
+### What worked
+- Batch encoding: 2 files (30s + 10s) encoded sequentially in ~3s total, 27.6% savings
+- Resolution scaling: `-vf scale=-2:360` on 480p input → 33.1% savings (more than without scale)
+- Output directory: `/tmp/ffmpeg_tui_output/` created and file placed correctly
+- DataTable for queue and results is much cleaner than Static text
+- `os.kill(proc.pid, signal.SIGSTOP/SIGCONT)` works cleanly for pause/resume
+
+### What didn't work
+- Rich markup parsing: `[1/2] Encoding: file.mp4` caused MarkupError because `[1/2]` was
+  parsed as a Rich style tag. Fixed by using parentheses: `(1/2) Encoding: file.mp4`.
+- Command preview didn't update when output dir input changed — `on_input_changed` only
+  handled `crf-input`. Fixed by adding `output-dir-input` to the handler.
+
+### What I learned
+- Textual's Static widget uses Rich markup by default — square brackets in dynamic text
+  MUST be escaped or avoided. Parentheses are the safe alternative.
+- `_get_current_settings()` pattern (read all UI state into a dict) is cleaner than maintaining
+  a separate "current settings" object. Settings are always fresh from the UI.
+- `create_job_from_template()` factory function makes it easy to stamp out jobs for batch queue
+
+### What was tricky to build
+- The batch encoding loop needed careful state management: each job gets its own
+  `resolve_output_path()` call (so files don't collide), its own progress tracking, and the
+  queue table updates after each progress tick. The `_current_job_idx` tracking which job is
+  active was the key coordination point.
+- Pause/resume: must resume (SIGCONT) before terminate (SIGTERM), otherwise the process stays
+  stopped and the terminate signal is pending but never processed.
+
+### What warrants a second pair of eyes
+- If the user changes settings between files in a batch, the settings are captured at queue
+  build time — subsequent UI changes don't affect in-flight encodes (this is correct but
+  could be surprising)
+- Pause only pauses the current ffmpeg process — if you cancel, remaining queued jobs are
+  also cancelled (worker is_cancelled propagates)
+
+### What should be done in the future
+- Per-file settings overrides in the queue
+- Drag-and-drop file reordering
+- HW encoder auto-detection at startup
+
+### Code review instructions
+- Start: `src/ffmpeg_tui/app.py` — focus on `_build_queue`, `_run_batch`, `_run_single_ffmpeg`
+- Model: `src/ffmpeg_tui/models/job.py` — `JobStatus`, `RESOLUTIONS`, `create_job_from_template`
+- Test: add 2+ files, set resolution and output dir, encode, verify results table

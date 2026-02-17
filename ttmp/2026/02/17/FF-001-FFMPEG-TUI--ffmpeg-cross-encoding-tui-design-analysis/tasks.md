@@ -19,3 +19,9 @@
 - [x] Phase 8: Encode screen — progress bar, stats, ffmpeg log
 - [x] Phase 9: Done screen — results summary table with size savings
 - [x] Phase 10: Polish — keybindings, error handling, CSS styling
+- [x] Feature: Multi-file selection — add/remove files to a queue from the Files tab
+- [x] Feature: Batch encoding — encode all queued files sequentially with per-job progress
+- [x] Feature: Resolution scaling — dropdown to downscale (keep original, 1080p, 720p, 480p)
+- [x] Feature: Output directory — configurable output dir with Input widget
+- [x] Feature: Pause/Resume encoding — SIGSTOP/SIGCONT toggle button
+- [x] Feature: Batch results — Done tab shows per-file results table with totals

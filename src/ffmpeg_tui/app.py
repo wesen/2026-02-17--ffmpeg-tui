@@ -10,16 +10,18 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.message import Message
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
+    DataTable,
     DirectoryTree,
     Footer,
     Header,
     Input,
     Label,
+    ListView,
+    ListItem,
     ProgressBar,
     RadioButton,
     RadioSet,
@@ -29,7 +31,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-from textual.worker import Worker, get_current_worker
+from textual.worker import get_current_worker
 
 from ffmpeg_tui.models.codecs import (
     AUDIO_BY_ID,
@@ -41,15 +43,42 @@ from ffmpeg_tui.models.codecs import (
     PRESETS,
     VIDEO_CODECS,
 )
-from ffmpeg_tui.models.job import EncodingJob
+from ffmpeg_tui.models.job import (
+    RESOLUTIONS,
+    EncodingJob,
+    JobStatus,
+    create_job_from_template,
+)
 from ffmpeg_tui.models.probe import ProbeResult, probe
 
 
 # ---------------------------------------------------------------------------
-# Custom filtered directory tree
+# Helpers
 # ---------------------------------------------------------------------------
 
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".ts", ".mts"}
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv",
+    ".wmv", ".m4v", ".ts", ".mts",
+}
+
+
+def _format_time(seconds: float) -> str:
+    total = int(seconds)
+    h, remainder = divmod(total, 3600)
+    m, s = divmod(remainder, 60)
+    if h > 0:
+        return f"{h}h:{m:02d}m:{s:02d}s"
+    return f"{m}m:{s:02d}s"
+
+
+def _format_size(size: int) -> str:
+    if size >= 1_073_741_824:
+        return f"{size / 1_073_741_824:.1f} GB"
+    if size >= 1_048_576:
+        return f"{size / 1_048_576:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
 
 
 class VideoDirectoryTree(DirectoryTree):
@@ -72,102 +101,49 @@ class FFmpegTUI(App):
     TITLE = "FFmpeg TUI"
 
     CSS = """
-    Screen {
-        layout: vertical;
-    }
-    TabbedContent {
-        height: 1fr;
-    }
-    TabPane {
-        padding: 1 2;
-        overflow-y: auto;
-    }
-    .pane-title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-    .section-label {
-        text-style: bold;
-        margin-bottom: 1;
-    }
+    Screen { layout: vertical; }
+    TabbedContent { height: 1fr; }
+    TabPane { padding: 1 2; overflow-y: auto; }
+    .pane-title { text-style: bold; margin-bottom: 1; }
+    .section-label { text-style: bold; margin-bottom: 1; }
+
     /* --- File Selection --- */
-    #file-input {
-        width: 1fr;
-    }
-    #btn-toggle-browser {
-        width: auto;
-        min-width: 12;
-    }
-    #file-browser {
-        height: 14;
-        border: solid $accent;
-        margin-top: 1;
-    }
-    #probe-info {
-        margin-top: 1;
-        padding: 1 2;
-        border: solid $success;
-        height: auto;
-        max-height: 10;
-    }
+    #file-input { width: 1fr; }
+    #btn-add-file { width: auto; min-width: 10; }
+    #btn-toggle-browser { width: auto; min-width: 12; }
+    #file-browser { height: 12; border: solid $accent; margin-top: 1; }
+    #file-list-box { margin-top: 1; border: solid $success; padding: 1; height: auto; max-height: 14; }
+    .file-list-header { text-style: bold; margin-bottom: 1; }
+    #btn-remove-file { margin-top: 1; }
+
     /* --- Codec Selection --- */
-    #tab-codec Horizontal {
-        height: auto;
-    }
-    #tab-codec Horizontal > Vertical {
-        width: 1fr;
-        margin: 0 1;
-    }
-    RadioSet {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-    }
+    #tab-codec Horizontal { height: auto; }
+    #tab-codec Horizontal > Vertical { width: 1fr; margin: 0 1; }
+    RadioSet { height: auto; border: solid $accent; padding: 1; }
+
     /* --- Settings --- */
-    #tab-settings Horizontal {
-        height: auto;
-    }
-    #tab-settings Horizontal > Vertical {
-        width: 1fr;
-        margin: 0 1;
-    }
-    #crf-input {
-        width: 12;
-    }
+    #tab-settings Horizontal { height: auto; }
+    #tab-settings Horizontal > Vertical { width: 1fr; margin: 0 1; }
+    #crf-input { width: 12; }
+    #output-dir-input { width: 1fr; margin-top: 1; }
     #command-preview {
-        padding: 1 2;
-        border: solid $warning;
-        background: $surface;
-        margin-top: 1;
-        height: auto;
+        padding: 1 2; border: solid $warning;
+        background: $surface; margin-top: 1; height: auto;
     }
+
     /* --- Encode --- */
-    .progress-stats {
-        padding: 1 2;
-        border: solid $accent;
-        margin-top: 1;
-    }
-    #encode-progress {
-        margin: 1 0;
-    }
-    #ffmpeg-log {
-        height: 8;
-        border: solid $accent;
-        margin-top: 1;
-    }
+    #queue-table { height: auto; max-height: 10; margin-bottom: 1; }
+    .progress-stats { padding: 1 2; border: solid $accent; margin-top: 1; }
+    #encode-progress { margin: 1 0; }
+    #ffmpeg-log { height: 6; border: solid $accent; margin-top: 1; }
+
     /* --- Done --- */
-    #results-box {
-        padding: 1 2;
-        border: solid $success;
-    }
+    #results-table { height: auto; max-height: 16; }
+    #results-summary { padding: 1 2; border: solid $success; margin-top: 1; }
+
     /* --- Shared --- */
-    .button-row {
-        margin-top: 1;
-        height: 3;
-    }
-    .button-row Button {
-        margin-right: 1;
-    }
+    .button-row { margin-top: 1; height: 3; }
+    .button-row Button { margin-right: 1; }
     """
 
     BINDINGS = [
@@ -179,16 +155,21 @@ class FFmpegTUI(App):
         Binding("f5", "switch_tab('tab-done')", "Done", show=True),
     ]
 
-    # Reactive state
-    selected_file: reactive[str] = reactive("")
-    probe_result: reactive[ProbeResult | None] = reactive(None)
-
     def __init__(self):
         super().__init__()
-        self._job = EncodingJob()
+        # Selected files (path → probe result)
+        self._selected_files: dict[str, ProbeResult] = {}
+        # Encoding queue
+        self._queue: list[EncodingJob] = []
+        self._current_job_idx: int = -1
         self._encoding = False
+        self._paused = False
         self._ffmpeg_proc: asyncio.subprocess.Process | None = None
         self._encode_start_time: float = 0.0
+
+    # =====================================================================
+    # Compose
+    # =====================================================================
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -198,12 +179,16 @@ class FFmpegTUI(App):
                 yield Label("📁 File Selection", classes="pane-title")
                 with Horizontal():
                     yield Input(
-                        placeholder="Enter video file path or browse below...",
+                        placeholder="Enter video file path...",
                         id="file-input",
                     )
+                    yield Button("+ Add", id="btn-add-file", variant="success")
                     yield Button("Browse ↕", id="btn-toggle-browser", variant="default")
                 yield VideoDirectoryTree(Path.home(), id="file-browser")
-                yield Static("No file selected.", id="probe-info")
+                yield Static("", id="file-list-box")
+                with Horizontal(classes="button-row"):
+                    yield Button("Remove Selected", id="btn-remove-file", variant="error")
+                    yield Button("Clear All", id="btn-clear-files", variant="warning")
 
             # --- TAB 2: Codec ---
             with TabPane("Codec", id="tab-codec"):
@@ -235,7 +220,7 @@ class FFmpegTUI(App):
                         yield Label("CRF (Quality)", classes="section-label")
                         yield Input("23", type="integer", id="crf-input")
                         yield Static(
-                            "Lower = better quality, larger file. "
+                            "Lower = better quality, larger file.\n"
                             "18=near-lossless  23=default  28=good  35=low",
                             id="crf-hint",
                         )
@@ -251,12 +236,27 @@ class FFmpegTUI(App):
                         )
                         yield Static("Slower = better compression", id="preset-hint")
 
-                yield Label("Audio Bitrate", classes="section-label")
-                yield Select(
-                    [("64k", "64k"), ("96k", "96k"), ("128k", "128k"),
-                     ("192k", "192k"), ("256k", "256k"), ("320k", "320k")],
-                    value="128k",
-                    id="audio-bitrate-select",
+                with Horizontal():
+                    with Vertical():
+                        yield Label("Audio Bitrate", classes="section-label")
+                        yield Select(
+                            [("64k", "64k"), ("96k", "96k"), ("128k", "128k"),
+                             ("192k", "192k"), ("256k", "256k"), ("320k", "320k")],
+                            value="128k",
+                            id="audio-bitrate-select",
+                        )
+                    with Vertical():
+                        yield Label("Resolution", classes="section-label")
+                        yield Select(
+                            [(label, height) for label, height in RESOLUTIONS],
+                            value=None,
+                            id="resolution-select",
+                        )
+
+                yield Label("Output Directory", classes="section-label")
+                yield Input(
+                    placeholder="Leave empty = same directory as input",
+                    id="output-dir-input",
                 )
 
                 yield Label("Quick Presets", classes="section-label")
@@ -271,139 +271,211 @@ class FFmpegTUI(App):
             # --- TAB 4: Encode ---
             with TabPane("Encode", id="tab-encode"):
                 yield Label("📋 Encode", classes="pane-title")
+                yield DataTable(id="queue-table")
                 yield Static("Ready to encode.", id="encode-status")
                 yield ProgressBar(total=100, show_eta=False, id="encode-progress")
                 yield Static("", id="encode-stats", classes="progress-stats")
                 with Horizontal(classes="button-row"):
                     yield Button("▶ Start Encode", id="btn-start", variant="success")
+                    yield Button("⏸ Pause", id="btn-pause", variant="warning")
                     yield Button("✕ Cancel", id="btn-cancel", variant="error")
                 yield RichLog(id="ffmpeg-log", wrap=True, markup=True)
 
             # --- TAB 5: Done ---
             with TabPane("Done", id="tab-done"):
                 yield Label("✅ Done", classes="pane-title")
-                yield Static("No results yet.", id="results-box")
+                yield DataTable(id="results-table")
+                yield Static("No results yet.", id="results-summary")
                 with Horizontal(classes="button-row"):
                     yield Button("New Encode", id="btn-new", variant="primary")
 
         yield Footer()
 
-    # ----- Actions -----
+    # =====================================================================
+    # Actions
+    # =====================================================================
 
     def action_switch_tab(self, tab_id: str) -> None:
-        """Switch to a tab by ID."""
         self.query_one(TabbedContent).active = tab_id
 
-    # ----- Event handlers -----
+    # =====================================================================
+    # Event handlers
+    # =====================================================================
 
     def on_mount(self) -> None:
         self._update_command_preview()
+        self._update_file_list_display()
+        # Setup queue table columns
+        qt = self.query_one("#queue-table", DataTable)
+        qt.add_columns("#", "File", "Status", "Progress")
+        # Setup results table columns
+        rt = self.query_one("#results-table", DataTable)
+        rt.add_columns("#", "File", "Input", "Output", "Saved", "Time")
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        """User selected a file in the tree."""
         path = str(event.path)
         self.query_one("#file-input", Input).value = path
-        self._probe_file(path)
+        self._add_file(path)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "file-input":
-            self._probe_file(event.value)
+            self._add_file(event.value)
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "crf-input":
-            try:
-                self._job.crf = int(event.value) if event.value else 23
-            except ValueError:
-                pass
+        if event.input.id in ("crf-input", "output-dir-input"):
             self._update_command_preview()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
-        """Handle codec/container/audio radio changes."""
         set_id = event.radio_set.id
         btn_id = event.pressed.id or ""
 
         if set_id == "video-codec-set" and btn_id.startswith("vc-"):
             codec_id = btn_id[3:]
-            self._job.video_codec_id = codec_id
-            # Auto-suggest container
             if codec_id in DEFAULT_CONTAINER:
-                suggested = DEFAULT_CONTAINER[codec_id]
-                self._select_container(suggested)
-            # Update CRF default and presets
+                self._select_container(DEFAULT_CONTAINER[codec_id])
             vc = CODEC_BY_ID[codec_id]
             self.query_one("#crf-input", Input).value = str(vc.crf_default)
-            self._job.crf = vc.crf_default
-            self._job.preset = vc.preset_default
             self._update_preset_select(vc)
-
-        elif set_id == "container-set" and btn_id.startswith("ct-"):
-            self._job.container_id = btn_id[3:]
-
-        elif set_id == "audio-codec-set" and btn_id.startswith("ac-"):
-            self._job.audio_codec_id = btn_id[3:]
 
         self._update_command_preview()
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "preset-select":
-            if event.value is not None and event.value != Select.BLANK:
-                self._job.preset = str(event.value)
-                self._update_command_preview()
-        elif event.select.id == "audio-bitrate-select":
-            if event.value is not None and event.value != Select.BLANK:
-                self._job.audio_bitrate = str(event.value)
-                self._update_command_preview()
-        elif event.select.id == "preset-load":
+        sel_id = event.select.id
+        if sel_id == "preset-load":
             if event.value is not None and event.value != Select.BLANK:
                 self._apply_preset(int(event.value))
+        else:
+            self._update_command_preview()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-start":
-            self._start_encode()
-        elif event.button.id == "btn-cancel":
-            self._cancel_encode()
-        elif event.button.id == "btn-new":
-            self.query_one(TabbedContent).active = "tab-files"
-        elif event.button.id == "btn-toggle-browser":
+        bid = event.button.id
+        if bid == "btn-add-file":
+            val = self.query_one("#file-input", Input).value
+            if val:
+                self._add_file(val)
+        elif bid == "btn-remove-file":
+            self._remove_last_file()
+        elif bid == "btn-clear-files":
+            self._selected_files.clear()
+            self._update_file_list_display()
+            self.notify("Cleared all files.")
+        elif bid == "btn-toggle-browser":
             tree = self.query_one("#file-browser", VideoDirectoryTree)
             tree.display = not tree.display
+        elif bid == "btn-start":
+            self._start_batch_encode()
+        elif bid == "btn-pause":
+            self._toggle_pause()
+        elif bid == "btn-cancel":
+            self._cancel_encode()
+        elif bid == "btn-new":
+            self.query_one(TabbedContent).active = "tab-files"
 
-    # ----- Internal helpers -----
+    # =====================================================================
+    # File management
+    # =====================================================================
 
-    def _probe_file(self, path: str) -> None:
-        """Probe a file and update the info panel."""
-        p = Path(path).expanduser()
+    def _add_file(self, path: str) -> None:
+        p = Path(path).expanduser().resolve()
         if not p.is_file():
-            self.query_one("#probe-info", Static).update(f"⚠ Not a file: {path}")
+            self.notify(f"Not a file: {path}", severity="warning")
+            return
+        key = str(p)
+        if key in self._selected_files:
+            self.notify(f"Already added: {p.name}", severity="warning")
             return
         result = probe(p)
-        self.probe_result = result
-        self._job.input_path = p
-        self._job.probe = result
         if result.error:
-            self.query_one("#probe-info", Static).update(f"⚠ {result.error}")
-        else:
-            lines = [f"✅ {p.name}"]
-            if result.video:
-                v = result.video
-                lines.append(f"   Video: {v.codec} {v.resolution} {v.fps}fps pix={v.pixel_format}")
-            if result.audio:
-                a = result.audio
-                lines.append(f"   Audio: {a.codec} {a.sample_rate}Hz {a.channels}ch {a.bitrate_kbps}")
-            lines.append(f"   Duration: {result.duration_str}  Size: {result.size_str}  Format: {result.format_name}")
-            self.query_one("#probe-info", Static).update("\n".join(lines))
+            self.notify(f"Probe error: {result.error}", severity="error")
+            return
+        self._selected_files[key] = result
+        self._update_file_list_display()
         self._update_command_preview()
+        self.notify(f"Added: {p.name}")
+        self.query_one("#file-input", Input).value = ""
+
+    def _remove_last_file(self) -> None:
+        if self._selected_files:
+            key = list(self._selected_files.keys())[-1]
+            name = Path(key).name
+            del self._selected_files[key]
+            self._update_file_list_display()
+            self._update_command_preview()
+            self.notify(f"Removed: {name}")
+
+    def _update_file_list_display(self) -> None:
+        box = self.query_one("#file-list-box", Static)
+        if not self._selected_files:
+            box.update("[dim]No files selected. Add files above.[/dim]")
+            return
+        lines = [f"[bold]{len(self._selected_files)} file(s) selected:[/bold]"]
+        for i, (path, pr) in enumerate(self._selected_files.items(), 1):
+            name = Path(path).name
+            info = pr.summary if pr else "?"
+            lines.append(f"  {i}. {name}")
+            lines.append(f"     {info}")
+        box.update("\n".join(lines))
+
+    # =====================================================================
+    # Settings helpers
+    # =====================================================================
+
+    def _get_current_settings(self) -> dict:
+        """Read current UI settings into a dict."""
+        # Video codec
+        vc_id = "libx264"
+        for child in self.query_one("#video-codec-set", RadioSet).children:
+            if isinstance(child, RadioButton) and child.value:
+                vc_id = child.id[3:] if child.id else "libx264"
+                break
+        # Container
+        ct_id = "mp4"
+        for child in self.query_one("#container-set", RadioSet).children:
+            if isinstance(child, RadioButton) and child.value:
+                ct_id = child.id[3:] if child.id else "mp4"
+                break
+        # Audio codec
+        ac_id = "aac"
+        for child in self.query_one("#audio-codec-set", RadioSet).children:
+            if isinstance(child, RadioButton) and child.value:
+                ac_id = child.id[3:] if child.id else "aac"
+                break
+        # CRF
+        try:
+            crf = int(self.query_one("#crf-input", Input).value or "23")
+        except ValueError:
+            crf = 23
+        # Preset
+        preset_sel = self.query_one("#preset-select", Select)
+        preset = str(preset_sel.value) if preset_sel.value not in (None, Select.BLANK) else "medium"
+        # Audio bitrate
+        ab_sel = self.query_one("#audio-bitrate-select", Select)
+        audio_bitrate = str(ab_sel.value) if ab_sel.value not in (None, Select.BLANK) else "128k"
+        # Resolution
+        res_sel = self.query_one("#resolution-select", Select)
+        scale_height = res_sel.value if res_sel.value not in (None, Select.BLANK) else None
+        # Output dir
+        out_dir_str = self.query_one("#output-dir-input", Input).value.strip()
+        output_dir = Path(out_dir_str).expanduser() if out_dir_str else None
+
+        return dict(
+            video_codec_id=vc_id,
+            container_id=ct_id,
+            audio_codec_id=ac_id,
+            crf=crf,
+            preset=preset,
+            audio_bitrate=audio_bitrate,
+            scale_height=scale_height,
+            output_dir=output_dir,
+        )
 
     def _select_container(self, container_id: str) -> None:
-        """Programmatically select a container radio button."""
-        radio_set = self.query_one("#container-set", RadioSet)
-        for child in radio_set.children:
+        for child in self.query_one("#container-set", RadioSet).children:
             if isinstance(child, RadioButton) and child.id == f"ct-{container_id}":
                 child.value = True
                 break
 
     def _update_preset_select(self, vc) -> None:
-        """Update the preset Select widget for the current video codec."""
         sel = self.query_one("#preset-select", Select)
         if vc.presets:
             sel.set_options([(p, p) for p in vc.presets])
@@ -413,29 +485,28 @@ class FFmpegTUI(App):
             sel.value = ""
 
     def _update_command_preview(self) -> None:
-        """Refresh the command preview text."""
         try:
-            cmd = self._job.command_str()
-            self.query_one("#command-preview", Static).update(
-                f"[bold]Command:[/bold]\n{cmd}"
-            )
+            settings = self._get_current_settings()
+            # Use first selected file, or a placeholder
+            if self._selected_files:
+                first_path = Path(next(iter(self._selected_files)))
+                first_probe = next(iter(self._selected_files.values()))
+            else:
+                first_path = Path("input.mp4")
+                first_probe = None
+
+            job = create_job_from_template(first_path, first_probe, **settings)
+            cmd = job.command_str()
+            count = len(self._selected_files)
+            prefix = f"[bold]Command ({count} file{'s' if count != 1 else ''}):[/bold]\n" if count else "[bold]Command:[/bold]\n"
+            self.query_one("#command-preview", Static).update(prefix + cmd)
         except Exception:
             pass
 
     def _apply_preset(self, idx: int) -> None:
-        """Apply a built-in encoding preset."""
         p = PRESETS[idx]
-        self._job.video_codec_id = p.video_codec_id
-        self._job.audio_codec_id = p.audio_codec_id
-        self._job.container_id = p.container_id
-        self._job.crf = p.crf
-        self._job.preset = p.preset
-        self._job.audio_bitrate = p.audio_bitrate
-
-        # Update UI to reflect preset
         self.query_one("#crf-input", Input).value = str(p.crf)
 
-        # Select the right video codec radio
         for child in self.query_one("#video-codec-set", RadioSet).children:
             if isinstance(child, RadioButton) and child.id == f"vc-{p.video_codec_id}":
                 child.value = True
@@ -458,44 +529,106 @@ class FFmpegTUI(App):
         self._update_command_preview()
         self.notify(f"Loaded preset: {p.name}")
 
-    # ----- Encoding -----
+    # =====================================================================
+    # Batch encoding
+    # =====================================================================
 
-    def _start_encode(self) -> None:
+    def _build_queue(self) -> list[EncodingJob]:
+        """Build encoding jobs for all selected files with current settings."""
+        settings = self._get_current_settings()
+        output_dir = settings.pop("output_dir")
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        jobs = []
+        for path_str, probe_result in self._selected_files.items():
+            job = create_job_from_template(
+                Path(path_str), probe_result, output_dir=output_dir, **settings,
+            )
+            job.resolve_output_path()
+            jobs.append(job)
+        return jobs
+
+    def _update_queue_table(self) -> None:
+        qt = self.query_one("#queue-table", DataTable)
+        qt.clear()
+        for i, job in enumerate(self._queue, 1):
+            pct = f"{job.progress:.0f}%" if job.progress > 0 else "—"
+            qt.add_row(str(i), job.input_path.name, job.status.value, pct)
+
+    def _start_batch_encode(self) -> None:
         if self._encoding:
             self.notify("Already encoding!", severity="warning")
             return
-        if not self._job.input_path.is_file():
-            self.notify("No input file selected!", severity="error")
+        if not self._selected_files:
+            self.notify("No files selected!", severity="error")
             return
 
+        self._queue = self._build_queue()
+        self._current_job_idx = -1
         self._encoding = True
-        self._job.resolve_output_path()  # Lock in output path before encoding
+        self._paused = False
+        self._update_queue_table()
+
         self.query_one("#encode-status", Static).update(
-            f"Encoding: {self._job.input_path.name}"
+            f"Starting batch: {len(self._queue)} file(s)"
         )
         self.query_one("#encode-progress", ProgressBar).update(total=100, progress=0)
         self.query_one("#encode-stats", Static).update("")
-        log = self.query_one("#ffmpeg-log", RichLog)
-        log.clear()
-
-        # Switch to encode tab
+        self.query_one("#ffmpeg-log", RichLog).clear()
         self.query_one(TabbedContent).active = "tab-encode"
 
-        self._encode_start_time = time.time()
-        self.run_worker(self._run_ffmpeg, exclusive=True)
+        self.run_worker(self._run_batch, exclusive=True)
 
-    async def _run_ffmpeg(self) -> None:
-        """Run ffmpeg as an async subprocess, parse progress."""
+    async def _run_batch(self) -> None:
+        """Encode all jobs in the queue sequentially."""
         worker = get_current_worker()
-        cmd = self._job.build_command()
-        # Insert -progress pipe:1 before output file
-        # cmd is: [ffmpeg, -i, input, ...flags, -y, output]
-        # Insert before -y
+
+        for idx, job in enumerate(self._queue):
+            if worker.is_cancelled:
+                break
+
+            self._current_job_idx = idx
+            job.status = JobStatus.ENCODING
+            self._update_queue_table()
+
+            self.query_one("#encode-status", Static).update(
+                f"({idx + 1}/{len(self._queue)}) Encoding: {job.input_path.name}"
+            )
+            self.query_one("#encode-progress", ProgressBar).update(total=100, progress=0)
+            self.query_one("#encode-stats", Static).update("")
+
+            self._encode_start_time = time.time()
+            success = await self._run_single_ffmpeg(job, worker)
+
+            job.elapsed = time.time() - self._encode_start_time
+            if success:
+                job.status = JobStatus.DONE
+                job.progress = 100.0
+                if job.output_path.exists():
+                    job.output_size = job.output_path.stat().st_size
+            elif worker.is_cancelled:
+                job.status = JobStatus.CANCELLED
+            else:
+                job.status = JobStatus.FAILED
+
+            self._update_queue_table()
+
+        self._encoding = False
+        self._ffmpeg_proc = None
+        self._show_batch_results()
+
+    async def _run_single_ffmpeg(self, job: EncodingJob, worker) -> bool:
+        """Run ffmpeg for a single job. Returns True on success."""
+        cmd = job.build_command()
         y_idx = cmd.index("-y")
-        cmd_with_progress = cmd[:y_idx] + ["-progress", "pipe:1", "-stats_period", "0.5"] + cmd[y_idx:]
+        cmd_with_progress = (
+            cmd[:y_idx]
+            + ["-progress", "pipe:1", "-stats_period", "0.5"]
+            + cmd[y_idx:]
+        )
 
-        duration = self._job.probe.duration if self._job.probe else 0
-
+        duration = job.probe.duration if job.probe else 0
         log = self.query_one("#ffmpeg-log", RichLog)
 
         try:
@@ -506,7 +639,6 @@ class FFmpegTUI(App):
             )
             self._ffmpeg_proc = proc
 
-            # Read stderr in background for log display
             async def read_stderr():
                 while True:
                     line = await proc.stderr.readline()
@@ -516,11 +648,10 @@ class FFmpegTUI(App):
                         break
                     text = line.decode("utf-8", errors="replace").rstrip()
                     if text:
-                        self.call_from_thread(log.write, text) if not self.is_running else log.write(text)
+                        log.write(text)
 
             stderr_task = asyncio.create_task(read_stderr())
 
-            # Read stdout (progress pipe)
             progress_data: dict[str, str] = {}
             while True:
                 line = await proc.stdout.readline()
@@ -535,45 +666,31 @@ class FFmpegTUI(App):
                     key, _, val = text.partition("=")
                     progress_data[key.strip()] = val.strip()
 
-                if text == "progress=continue" or text == "progress=end":
-                    self._update_progress(progress_data, duration)
+                if text in ("progress=continue", "progress=end"):
+                    pct = self._update_progress(progress_data, duration)
+                    job.progress = pct
+                    self._update_queue_table()
                     progress_data = {}
 
             await stderr_task
             await proc.wait()
-
             self._ffmpeg_proc = None
-            self._encoding = False
-
-            if proc.returncode == 0:
-                self._show_results()
-            else:
-                self.call_from_thread(
-                    self.query_one("#encode-status", Static).update,
-                    f"⚠ FFmpeg exited with code {proc.returncode}",
-                )
+            return proc.returncode == 0
 
         except Exception as e:
-            self._encoding = False
             self._ffmpeg_proc = None
-            self.call_from_thread(
-                self.query_one("#encode-status", Static).update,
-                f"⚠ Error: {e}",
-            )
+            log.write(f"[red]Error: {e}[/red]")
+            return False
 
-    def _update_progress(self, data: dict[str, str], duration: float) -> None:
-        """Update progress bar and stats from ffmpeg progress data."""
+    def _update_progress(self, data: dict[str, str], duration: float) -> float:
+        """Update UI and return percentage."""
         out_time = data.get("out_time_ms", data.get("out_time_us", "0"))
         try:
-            # out_time_ms is in microseconds despite the name
-            out_us = int(out_time)
-            out_seconds = out_us / 1_000_000
+            out_seconds = int(out_time) / 1_000_000
         except ValueError:
             out_seconds = 0
 
-        pct = 0.0
-        if duration > 0 and out_seconds > 0:
-            pct = min(100.0, (out_seconds / duration) * 100)
+        pct = min(100.0, (out_seconds / duration) * 100) if duration > 0 else 0.0
 
         speed = data.get("speed", "N/A")
         fps = data.get("fps", "N/A")
@@ -582,92 +699,126 @@ class FFmpegTUI(App):
         frame = data.get("frame", "N/A")
 
         elapsed = time.time() - self._encode_start_time
-        elapsed_str = _format_time(elapsed)
-        eta_str = "N/A"
-        if pct > 0:
-            total_est = elapsed / (pct / 100)
-            eta = total_est - elapsed
-            eta_str = _format_time(eta)
+        eta_str = _format_time((elapsed / (pct / 100)) - elapsed) if pct > 0 else "N/A"
 
-        # Format size nicely
         size_str = total_size
         try:
-            size_bytes = int(total_size)
-            if size_bytes >= 1_048_576:
-                size_str = f"{size_bytes / 1_048_576:.1f} MB"
-            elif size_bytes >= 1024:
-                size_str = f"{size_bytes / 1024:.0f} KB"
+            sb = int(total_size)
+            size_str = _format_size(sb)
         except (ValueError, TypeError):
             pass
 
+        pause_indicator = "  ⏸ PAUSED" if self._paused else ""
+        job_num = f"({self._current_job_idx + 1}/{len(self._queue)}) " if len(self._queue) > 1 else ""
         stats = (
-            f"Frame: {frame}  FPS: {fps}  Speed: {speed}\n"
+            f"Frame: {frame}  FPS: {fps}  Speed: {speed}{pause_indicator}\n"
             f"Size: {size_str}  Bitrate: {bitrate}\n"
-            f"Elapsed: {elapsed_str}  ETA: {eta_str}  Progress: {pct:.1f}%"
+            f"Elapsed: {_format_time(elapsed)}  ETA: {eta_str}  Progress: {pct:.1f}%"
         )
 
         try:
             self.query_one("#encode-progress", ProgressBar).update(progress=pct)
             self.query_one("#encode-stats", Static).update(stats)
+            cur_job = self._queue[self._current_job_idx] if self._current_job_idx >= 0 else None
+            name = cur_job.input_path.name if cur_job else "?"
             self.query_one("#encode-status", Static).update(
-                f"Encoding: {self._job.input_path.name} — {pct:.1f}%"
+                f"{job_num}Encoding: {name} — {pct:.1f}%{pause_indicator}"
             )
         except Exception:
             pass
 
+        return pct
+
+    # =====================================================================
+    # Pause / Cancel
+    # =====================================================================
+
+    def _toggle_pause(self) -> None:
+        if not self._ffmpeg_proc or not self._encoding:
+            return
+        if self._paused:
+            # Resume
+            try:
+                os.kill(self._ffmpeg_proc.pid, signal.SIGCONT)
+            except OSError:
+                pass
+            self._paused = False
+            self.query_one("#btn-pause", Button).label = "⏸ Pause"
+            self.notify("Resumed encoding.")
+        else:
+            # Pause
+            try:
+                os.kill(self._ffmpeg_proc.pid, signal.SIGSTOP)
+            except OSError:
+                pass
+            self._paused = True
+            self.query_one("#btn-pause", Button).label = "▶ Resume"
+            self.notify("Encoding paused.")
+
     def _cancel_encode(self) -> None:
         if self._ffmpeg_proc:
+            # Resume first if paused, then terminate
+            if self._paused:
+                try:
+                    os.kill(self._ffmpeg_proc.pid, signal.SIGCONT)
+                except OSError:
+                    pass
+                self._paused = False
             self._ffmpeg_proc.terminate()
             self.notify("Encoding cancelled.")
-            self._encoding = False
-            self.query_one("#encode-status", Static).update("Cancelled.")
+        self._encoding = False
+        self.query_one("#encode-status", Static).update("Cancelled.")
+        self.query_one("#btn-pause", Button).label = "⏸ Pause"
 
-    def _show_results(self) -> None:
-        """Show completion summary."""
-        elapsed = time.time() - self._encode_start_time
-        out_path = self._job.output_path
-        in_size = self._job.probe.size if self._job.probe else 0
-        out_size = 0
-        if out_path.exists():
-            out_size = out_path.stat().st_size
+    # =====================================================================
+    # Results
+    # =====================================================================
 
-        in_str = _format_size(in_size)
-        out_str = _format_size(out_size)
-        saved_pct = ((1 - out_size / in_size) * 100) if in_size > 0 else 0
+    def _show_batch_results(self) -> None:
+        rt = self.query_one("#results-table", DataTable)
+        rt.clear()
 
-        result_text = (
-            f"✅ Encoding complete!\n\n"
-            f"  Input:    {self._job.input_path.name} ({in_str})\n"
-            f"  Output:   {out_path.name} ({out_str})\n"
-            f"  Saved:    {saved_pct:.1f}%\n"
-            f"  Time:     {_format_time(elapsed)}\n"
-            f"  Codec:    {self._job.video_codec.label}\n"
-            f"  CRF:      {self._job.crf}\n"
-        )
+        total_in = 0
+        total_out = 0
+        total_time = 0.0
+        done_count = 0
+        fail_count = 0
 
-        try:
-            self.query_one("#results-box", Static).update(result_text)
-            self.query_one("#encode-status", Static).update("✅ Done!")
-            self.query_one("#encode-progress", ProgressBar).update(progress=100)
-            self.query_one(TabbedContent).active = "tab-done"
-        except Exception:
-            pass
+        for i, job in enumerate(self._queue, 1):
+            in_size = job.probe.size if job.probe else 0
+            out_size = job.output_size
+            saved = f"{((1 - out_size / in_size) * 100):.1f}%" if in_size > 0 and out_size > 0 else "—"
+            status_icon = "✅" if job.status == JobStatus.DONE else "❌" if job.status == JobStatus.FAILED else "⊘"
 
+            rt.add_row(
+                f"{status_icon} {i}",
+                job.input_path.name,
+                _format_size(in_size),
+                _format_size(out_size) if out_size else "—",
+                saved,
+                _format_time(job.elapsed),
+            )
 
-def _format_time(seconds: float) -> str:
-    total = int(seconds)
-    h, remainder = divmod(total, 3600)
-    m, s = divmod(remainder, 60)
-    if h > 0:
-        return f"{h}h:{m:02d}m:{s:02d}s"
-    return f"{m}m:{s:02d}s"
+            total_in += in_size
+            total_out += out_size
+            total_time += job.elapsed
+            if job.status == JobStatus.DONE:
+                done_count += 1
+            elif job.status == JobStatus.FAILED:
+                fail_count += 1
 
+        # Totals row
+        total_saved = f"{((1 - total_out / total_in) * 100):.1f}%" if total_in > 0 and total_out > 0 else "—"
+        rt.add_row("", "TOTAL", _format_size(total_in), _format_size(total_out), total_saved, _format_time(total_time))
 
-def _format_size(size: int) -> str:
-    if size >= 1_073_741_824:
-        return f"{size / 1_073_741_824:.1f} GB"
-    if size >= 1_048_576:
-        return f"{size / 1_048_576:.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.0f} KB"
-    return f"{size} B"
+        # Summary
+        summary_parts = [f"✅ {done_count} encoded"]
+        if fail_count:
+            summary_parts.append(f"❌ {fail_count} failed")
+        summary_parts.append(f"Total saved: {total_saved}")
+        summary_parts.append(f"Total time: {_format_time(total_time)}")
+
+        self.query_one("#results-summary", Static).update("  ".join(summary_parts))
+        self.query_one("#encode-status", Static).update("✅ Batch complete!")
+        self.query_one("#encode-progress", ProgressBar).update(progress=100)
+        self.query_one(TabbedContent).active = "tab-done"

@@ -27,3 +27,13 @@ Implemented full v0.1 TUI: file select, codec/container/audio, settings with com
 
 - /home/manuel/code/wesen/2026-02-17--ffmpeg-tui/src/ffmpeg_tui/app.py — Main app
 
+
+## 2026-02-17
+
+Added 6 features: multi-file selection, batch encoding, resolution scaling, output directory, pause/resume, batch results table
+
+### Related Files
+
+- /home/manuel/code/wesen/2026-02-17--ffmpeg-tui/src/ffmpeg_tui/app.py — Rewritten with batch queue
+- /home/manuel/code/wesen/2026-02-17--ffmpeg-tui/src/ffmpeg_tui/models/job.py — Added JobStatus
+
