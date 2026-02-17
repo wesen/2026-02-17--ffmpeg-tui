@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ffmpeg-tui"
+version = "0.1.0"
+description = "A terminal UI for cross-encoding videos with ffmpeg"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=2.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+ffmpeg-tui = "ffmpeg_tui.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
