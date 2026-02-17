@@ -10,8 +10,8 @@
 - [ ] Implement v0.1 MVP based on approved design
 - [x] Phase 0: Create project scaffold (pyproject.toml, __main__.py, directory structure)
 - [x] Phase 1: Bare Textual app skeleton with tabs, header, footer, placeholder panes
-- [ ] Phase 2: ffprobe wrapper model (probe.py) — parse video metadata from ffprobe JSON
-- [ ] Phase 3: Codec/container data model and preset definitions
+- [x] Phase 2: ffprobe wrapper model (probe.py) — parse video metadata from ffprobe JSON
+- [x] Phase 3: Codec/container data model and preset definitions
 - [ ] Phase 4: File selection — input path widget with ffprobe info display
 - [ ] Phase 5: Codec/container/audio selection pane with radio buttons
 - [ ] Phase 6: Settings pane — CRF input, preset select, command preview
